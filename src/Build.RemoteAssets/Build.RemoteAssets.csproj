@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
+    <Nullable>enable</Nullable>
 
     <!--Ships MSBuild logic only. Without IncludeBuildOutput=false the package would carry an empty
         lib/ assembly that consumers reference for no reason; NU5128 is the SDK complaining about
