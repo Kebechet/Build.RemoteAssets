@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>netstandard2.0</TargetFramework>
+    <TargetFramework>netstandard2.1</TargetFramework>
 
     <!--Ships MSBuild logic only. Without IncludeBuildOutput=false the package would carry an empty
         lib/ assembly that consumers reference for no reason; NU5128 is the SDK complaining about
@@ -25,8 +25,8 @@
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
     <PackageIcon>icon.png</PackageIcon>
     <PackageTags>msbuild;build;download;assets;staticwebassets;blazor;maui;cdn;blob</PackageTags>
-    <Version>1.0.0</Version>
-    <PackageReleaseNotes>Initial release.</PackageReleaseNotes>
+    <Version>1.0.1</Version>
+    <PackageReleaseNotes>Package icon now depicts what the package does. Target framework moved to netstandard2.1; it is never surfaced to consumers, since the package ships no assembly.</PackageReleaseNotes>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <DeterministicSourcePaths Condition="'$(GITHUB_ACTIONS)' == 'true'">true</DeterministicSourcePaths>
