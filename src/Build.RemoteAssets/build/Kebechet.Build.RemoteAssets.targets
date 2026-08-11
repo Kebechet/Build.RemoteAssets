@@ -1,0 +1,238 @@
+<Project>
+
+  <!--
+    Kebechet.Build.RemoteAssets
+
+    Downloads files over HTTP during the build and registers them as build items, so a repository
+    can reference large or frequently-replaced binaries without committing them.
+
+      <RemoteAsset Include="https://cdn.example.com/v1/hero.webp" Path="wwwroot/img" />
+
+    Item metadata:
+      Include   the URL, or the file name when Url is also set
+      Url       explicit URL; required when the URL contains '?' (see the note on globbing below)
+      Path      directory to save into, relative to the project; defaults to $(RemoteAssetPath)
+      Name      file name to save as; defaults to the last segment of the URL
+      Sha256    expected hash; the build fails when the downloaded bytes do not match
+      ItemType  Content (default), MauiAsset, EmbeddedResource or None
+  -->
+
+  <PropertyGroup>
+    <RemoteAssetsEnabled Condition="'$(RemoteAssetsEnabled)' == ''">true</RemoteAssetsEnabled>
+    <RemoteAssetItemType Condition="'$(RemoteAssetItemType)' == ''">Content</RemoteAssetItemType>
+    <RemoteAssetRetries Condition="'$(RemoteAssetRetries)' == ''">3</RemoteAssetRetries>
+    <RemoteAssetRetryDelayMilliseconds Condition="'$(RemoteAssetRetryDelayMilliseconds)' == ''">2000</RemoteAssetRetryDelayMilliseconds>
+
+    <!--Deliberately TFM-neutral ($(BaseIntermediateOutputPath), not $(IntermediateOutputPath)).
+        A multi-targeted project runs this logic once per inner build, all writing the same
+        destination file; a per-TFM stamp directory would make each inner build believe the asset
+        was never fetched and re-download it concurrently over the copy the others are reading.-->
+    <RemoteAssetStampDirectory Condition="'$(RemoteAssetStampDirectory)' == ''">$(BaseIntermediateOutputPath)RemoteAssets\</RemoteAssetStampDirectory>
+  </PropertyGroup>
+
+  <Target Name="_RemoteAssetsComputePaths" Condition="'@(RemoteAsset)' != ''">
+
+    <ItemGroup>
+      <_RemoteAsset Include="@(RemoteAsset)" />
+    </ItemGroup>
+
+    <!--'?' is an MSBuild wildcard, so a query-string URL in Include is expanded as a file glob,
+        matches nothing, and the item vanishes without an error. Carrying the URL in metadata is
+        the only safe form for a SAS-signed or otherwise parameterised link.-->
+    <ItemGroup>
+      <_RemoteAsset>
+        <_Url Condition="'%(_RemoteAsset.Url)' != ''">%(_RemoteAsset.Url)</_Url>
+        <_Url Condition="'%(_RemoteAsset.Url)' == ''">%(Identity)</_Url>
+      </_RemoteAsset>
+    </ItemGroup>
+
+    <ItemGroup>
+      <_RemoteAsset>
+        <_Name Condition="'%(_RemoteAsset.Name)' != ''">%(_RemoteAsset.Name)</_Name>
+        <_Name Condition="'%(_RemoteAsset.Name)' == '' and '%(_RemoteAsset.Url)' != ''">%(Identity)</_Name>
+        <_Name Condition="'%(_RemoteAsset.Name)' == '' and '%(_RemoteAsset.Url)' == ''">$([System.IO.Path]::GetFileName('%(Identity)'))</_Name>
+        <_Directory Condition="'%(_RemoteAsset.Path)' != ''">$([MSBuild]::EnsureTrailingSlash('%(_RemoteAsset.Path)'))</_Directory>
+        <_Directory Condition="'%(_RemoteAsset.Path)' == '' and '$(RemoteAssetPath)' != ''">$([MSBuild]::EnsureTrailingSlash('$(RemoteAssetPath)'))</_Directory>
+        <_ItemType Condition="'%(_RemoteAsset.ItemType)' != ''">%(_RemoteAsset.ItemType)</_ItemType>
+        <_ItemType Condition="'%(_RemoteAsset.ItemType)' == ''">$(RemoteAssetItemType)</_ItemType>
+      </_RemoteAsset>
+    </ItemGroup>
+
+    <ItemGroup>
+      <_RemoteAsset>
+        <_DirectoryFull>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '%(_RemoteAsset._Directory)'))</_DirectoryFull>
+      </_RemoteAsset>
+    </ItemGroup>
+
+    <ItemGroup>
+      <_RemoteAsset>
+        <_DestinationFull>$([MSBuild]::NormalizePath('%(_RemoteAsset._DirectoryFull)', '%(_RemoteAsset._Name)'))</_DestinationFull>
+      </_RemoteAsset>
+    </ItemGroup>
+
+    <!--Derived by round-tripping through the absolute path rather than concatenating the raw Path
+        metadata: 'wwwroot/img' + '\' + 'a.webp' yields mixed separators, which the static web asset
+        pipeline cannot resolve ("No file exists for the asset at either location").-->
+    <ItemGroup>
+      <_RemoteAsset>
+        <_Destination>$([MSBuild]::MakeRelative('$(MSBuildProjectDirectory)', '%(_RemoteAsset._DestinationFull)'))</_Destination>
+      </_RemoteAsset>
+    </ItemGroup>
+
+    <ItemGroup>
+      <_RemoteAsset>
+        <_Stamp>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(RemoteAssetStampDirectory)', '%(_RemoteAsset._Destination)')).stamp</_Stamp>
+
+        <!--The stamp records what produced the cached copy, so changing the URL (a new version
+            segment) or the expected hash invalidates it. This is why the package needs no version
+            property: the URL already is the cache key.-->
+        <_Key>%(_RemoteAsset._Url)|%(_RemoteAsset.Sha256)</_Key>
+      </_RemoteAsset>
+    </ItemGroup>
+
+    <Error Condition="$([System.String]::Copy('%(_RemoteAsset._Name)').Contains('?'))"
+           Text="RemoteAsset '%(_RemoteAsset.Identity)' resolves to the file name '%(_RemoteAsset._Name)', which is not a valid file name. A URL with a query string must be passed as Url metadata with the file name in Include: &lt;RemoteAsset Include=&quot;file.ext&quot; Url=&quot;https://...&quot; /&gt;" />
+
+    <Error Condition="'%(_RemoteAsset._ItemType)' != 'Content' and '%(_RemoteAsset._ItemType)' != 'MauiAsset' and '%(_RemoteAsset._ItemType)' != 'EmbeddedResource' and '%(_RemoteAsset._ItemType)' != 'None'"
+           Text="RemoteAsset '%(_RemoteAsset.Identity)' declares ItemType '%(_RemoteAsset._ItemType)'. Supported values are Content, MauiAsset, EmbeddedResource and None." />
+
+  </Target>
+
+  <!--Batched per destination so each asset gets its own cache decision; a target body re-runs in
+      full for every batch, which is what lets the stamp be read into a property per asset.-->
+  <Target Name="_RemoteAssetsFetch"
+          Condition="'@(_RemoteAsset)' != ''"
+          Outputs="%(_RemoteAsset._Destination)">
+
+    <PropertyGroup>
+      <_RemoteAssetCachedKey />
+    </PropertyGroup>
+
+    <ReadLinesFromFile File="%(_RemoteAsset._Stamp)" Condition="Exists('%(_RemoteAsset._Stamp)')">
+      <Output TaskParameter="Lines" PropertyName="_RemoteAssetCachedKey" />
+    </ReadLinesFromFile>
+
+    <Delete Files="%(_RemoteAsset._DestinationFull)"
+            Condition="Exists('%(_RemoteAsset._DestinationFull)') and '$(_RemoteAssetCachedKey)' != '%(_RemoteAsset._Key)'" />
+
+    <!--Exists() rather than SkipUnchangedFiles: the URL is the identity, so a file already sitting
+        at the destination for the current key needs no request at all. Keeps incremental builds
+        offline-capable.-->
+    <DownloadFile SourceUrl="%(_RemoteAsset._Url)"
+                  DestinationFolder="%(_RemoteAsset._DirectoryFull)"
+                  DestinationFileName="%(_RemoteAsset._Name)"
+                  Retries="$(RemoteAssetRetries)"
+                  RetryDelayMilliseconds="$(RemoteAssetRetryDelayMilliseconds)"
+                  SkipUnchangedFiles="false"
+                  Condition="!Exists('%(_RemoteAsset._DestinationFull)')" />
+
+    <Error Condition="!Exists('%(_RemoteAsset._DestinationFull)')"
+           Text="RemoteAsset '%(_RemoteAsset._Name)' could not be downloaded from %(_RemoteAsset._Url) and no cached copy exists. Failing the build rather than producing output with the asset missing." />
+
+    <GetFileHash Files="%(_RemoteAsset._DestinationFull)"
+                 Algorithm="SHA256"
+                 HashEncoding="hex"
+                 Condition="'%(_RemoteAsset.Sha256)' != ''">
+      <Output TaskParameter="Hash" PropertyName="_RemoteAssetActualHash" />
+    </GetFileHash>
+
+    <!--Deleted before failing: leaving unverified bytes on disk would let the next build treat
+        them as a valid cache hit and skip the check.-->
+    <Delete Files="%(_RemoteAsset._DestinationFull)"
+            Condition="'%(_RemoteAsset.Sha256)' != '' and '$(_RemoteAssetActualHash)' != '%(_RemoteAsset.Sha256)'" />
+
+    <Error Condition="'%(_RemoteAsset.Sha256)' != '' and '$(_RemoteAssetActualHash)' != '%(_RemoteAsset.Sha256)'"
+           Text="RemoteAsset '%(_RemoteAsset._Name)' failed hash verification. Expected SHA256 %(_RemoteAsset.Sha256) but %(_RemoteAsset._Url) returned $(_RemoteAssetActualHash). The remote file changed under the same URL, or the download was corrupted." />
+
+    <WriteLinesToFile File="%(_RemoteAsset._Stamp)"
+                      Lines="%(_RemoteAsset._Key)"
+                      Overwrite="true"
+                      WriteOnlyWhenDifferent="true" />
+
+  </Target>
+
+  <!--Only ever removes files this package downloaded, tracked by their stamps, so a committed file
+      living in the same directory as fetched ones is never touched.-->
+  <Target Name="_RemoteAssetsRemoveOrphans" Condition="'$(RemoteAssetsEnabled)' == 'true'">
+
+    <!--Both sides of the Exclude must be absolute. A glob yields project-relative specs while
+        _Stamp is absolute, and MSBuild compares the two as plain strings: they never match, every
+        stamp reads as an orphan, and the target deletes the assets it just downloaded.
+        The stamp tree mirrors the destination tree, so %(RecursiveDir)%(Filename) reverses a stamp
+        path back to the file it tracks.-->
+    <ItemGroup>
+      <_RemoteAssetStamp Include="$(RemoteAssetStampDirectory)**\*.stamp" />
+    </ItemGroup>
+
+    <!--Separate update element on purpose: %(FullPath) and %(RecursiveDir) referenced inside the
+        element that creates the item batch over the list as it was before the Include, which is
+        empty, so both silently resolve to nothing.-->
+    <ItemGroup>
+      <_RemoteAssetStamp>
+        <_Self>%(FullPath)</_Self>
+        <_Tracked>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '%(RecursiveDir)%(Filename)'))</_Tracked>
+        <_TrackedRelative>%(RecursiveDir)%(Filename)</_TrackedRelative>
+      </_RemoteAssetStamp>
+    </ItemGroup>
+
+    <ItemGroup>
+      <_RemoteAssetOrphanStamp Include="@(_RemoteAssetStamp->'%(_Self)')" Exclude="@(_RemoteAsset->'%(_Stamp)')" />
+    </ItemGroup>
+
+    <Message Importance="Low" Text="RemoteAssets: stamp on disk '%(_RemoteAssetStamp.Identity)' self='%(_RemoteAssetStamp._Self)' tracks='%(_RemoteAssetStamp._Tracked)'" />
+    <Message Importance="Low" Text="RemoteAssets: expected stamp '%(_RemoteAsset._Stamp)'" />
+    <Message Importance="Low" Text="RemoteAssets: orphan '%(_RemoteAssetOrphanStamp.Identity)' tracks '%(_RemoteAssetOrphanStamp._Tracked)'" />
+
+    <Delete Files="@(_RemoteAssetOrphanStamp->'%(_Tracked)');@(_RemoteAssetOrphanStamp)" />
+
+    <!--A retired asset was still on disk when the SDK's globs ran, so it is already sitting in
+        Content. Deleting the file without withdrawing the item leaves the static web asset
+        pipeline resolving a path that no longer exists, which fails this build and only comes
+        right on the next one.-->
+    <ItemGroup>
+      <Content Remove="@(_RemoteAssetOrphanStamp->'%(_TrackedRelative)')" />
+      <None Remove="@(_RemoteAssetOrphanStamp->'%(_TrackedRelative)')" />
+      <MauiAsset Remove="@(_RemoteAssetOrphanStamp->'%(_TrackedRelative)')" />
+      <EmbeddedResource Remove="@(_RemoteAssetOrphanStamp->'%(_TrackedRelative)')" />
+    </ItemGroup>
+
+  </Target>
+
+  <!--AssignTargetPaths is the last point at which an item can still enter static web asset
+      discovery. Registering any later puts the file on disk but leaves it out of the manifest, so
+      the build succeeds and the asset 404s at runtime.-->
+  <Target Name="RemoteAssets"
+          BeforeTargets="AssignTargetPaths"
+          DependsOnTargets="_RemoteAssetsComputePaths;_RemoteAssetsFetch;_RemoteAssetsRemoveOrphans"
+          Condition="'$(RemoteAssetsEnabled)' == 'true' and '@(RemoteAsset)' != ''">
+
+    <!--Files under an SDK-globbed folder (wwwroot, Resources/Raw) are already picked up by the
+        default globs once they exist on disk. Registering them again would hand the static web
+        asset pipeline two items for one path, which it rejects outright.-->
+    <ItemGroup>
+      <Content Remove="@(_RemoteAsset->'%(_Destination)')" />
+      <None Remove="@(_RemoteAsset->'%(_Destination)')" />
+      <MauiAsset Remove="@(_RemoteAsset->'%(_Destination)')" />
+      <EmbeddedResource Remove="@(_RemoteAsset->'%(_Destination)')" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <Content Include="@(_RemoteAsset->'%(_Destination)')"
+               Condition="'%(_RemoteAsset._ItemType)' == 'Content'"
+               CopyToOutputDirectory="PreserveNewest"
+               CopyToPublishDirectory="PreserveNewest" />
+
+      <MauiAsset Include="@(_RemoteAsset->'%(_Destination)')"
+                 Condition="'%(_RemoteAsset._ItemType)' == 'MauiAsset'"
+                 LogicalName="%(_RemoteAsset._Name)" />
+
+      <EmbeddedResource Include="@(_RemoteAsset->'%(_Destination)')"
+                        Condition="'%(_RemoteAsset._ItemType)' == 'EmbeddedResource'" />
+
+      <None Include="@(_RemoteAsset->'%(_Destination)')"
+            Condition="'%(_RemoteAsset._ItemType)' == 'None'" />
+    </ItemGroup>
+
+  </Target>
+
+</Project>

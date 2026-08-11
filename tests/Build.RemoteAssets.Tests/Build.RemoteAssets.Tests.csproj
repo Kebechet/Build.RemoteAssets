@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.*" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
+    <PackageReference Include="xunit.v3" Version="3.*" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.*" />
+    <PackageReference Include="Shouldly" Version="4.*" />
+  </ItemGroup>
+
+  <!--The tests drive real builds of generated fixture projects, so they need the path to the
+      targets under test. Baked in at compile time rather than walked up from the test assembly
+      location, which changes with configuration and target framework.-->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadata">
+      <_Parameter1>RemoteAssetsTargetsPath</_Parameter1>
+      <_Parameter2>$(MSBuildThisFileDirectory)..\..\src\Build.RemoteAssets\build\Kebechet.Build.RemoteAssets.targets</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+</Project>

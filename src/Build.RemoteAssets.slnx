@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Build.RemoteAssets\Build.RemoteAssets.csproj" />
+  <Project Path="..\tests\Build.RemoteAssets.Tests\Build.RemoteAssets.Tests.csproj" />
+</Solution>

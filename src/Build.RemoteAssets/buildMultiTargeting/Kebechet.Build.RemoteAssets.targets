@@ -1,0 +1,20 @@
+<Project>
+
+  <!--
+    Outer build of a multi-targeted project (net10.0-android;net10.0-ios;...).
+
+    NuGet imports this file instead of build/*.targets for the target-framework-less pass, and the
+    inner builds then get build/*.targets each. Without a fetch here, every inner build races the
+    others to download the same URL into the same destination file - MSBuild runs them in parallel,
+    so the Exists() guard is checked by all of them before any has finished writing. Fetching once
+    up front means the inner builds find the file already cached and never issue a request.
+  -->
+
+  <Import Project="$(MSBuildThisFileDirectory)..\build\Kebechet.Build.RemoteAssets.targets" />
+
+  <Target Name="RemoteAssetsOuter"
+          BeforeTargets="DispatchToInnerBuilds"
+          DependsOnTargets="_RemoteAssetsComputePaths;_RemoteAssetsFetch;_RemoteAssetsRemoveOrphans"
+          Condition="'$(RemoteAssetsEnabled)' == 'true' and '@(RemoteAsset)' != ''" />
+
+</Project>
